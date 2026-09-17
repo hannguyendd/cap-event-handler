@@ -1,0 +1,53 @@
+[project]
+name = "cap-event-handler"
+version = "0.1.0"
+description = "Transactional outbox/inbox messaging for Python, PostgreSQL and Amazon SNS/SQS"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.29",
+    "pydantic>=2.0",
+    "aiobotocore>=2.13",
+    "uuid6>=2024.7.10 ; python_full_version < '3.14'",
+]
+
+[project.scripts]
+cap-event-handler = "cap_event_handler.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "hypothesis>=6.100",
+    "testcontainers[postgres]>=4.8",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "types-aiobotocore[sns,sqs]>=2.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires Docker (PostgreSQL + LocalStack); deselected by default",
+]
+addopts = "-m 'not integration'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
