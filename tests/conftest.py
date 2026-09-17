@@ -60,3 +60,18 @@ async def storage(sqlite_engine, settings, clock):
     store = SqlStorage(sqlite_engine, settings, clock=clock)
     await store.create_tables()
     return store
+
+
+@pytest.fixture
+def transport(clock):
+    from cap_event_handler.transport.memory import MemoryTransport
+
+    return MemoryTransport(clock=clock, visibility_timeout=30, max_receive_count=5)
+
+
+@pytest.fixture
+def publisher(storage, transport, settings):
+    from cap_event_handler.publisher import Publisher, install_after_commit_listener
+
+    install_after_commit_listener()
+    return Publisher(storage, transport, settings)
