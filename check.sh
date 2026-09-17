@@ -5,7 +5,7 @@ set -uo pipefail
 fail=0
 run() { echo "--- $* ---"; "$@" || fail=1; }
 run uv run ruff format .
-run uv run ruff check .
+run uv run ruff check . --fix
 run uv run mypy src
 run uv run pytest -q
 if [ "$fail" -eq 0 ]; then echo "GATE: PASS"; else echo "GATE: FAIL"; fi
