@@ -58,13 +58,13 @@ def test_inbox_primary_key_is_msg_id_and_group() -> None:
 
 def test_inbox_has_no_status_or_retry_column() -> None:
     """A row's existence IS success; there is no partial state to reconcile."""
-    cols = build_tables(schema=None).inbox.columns.keys()
+    cols = set(build_tables(schema=None).inbox.columns.keys())
     assert "status" not in cols
     assert "retries" not in cols
 
 
 def test_outbox_has_no_version_column() -> None:
-    assert "version" not in build_tables(schema=None).outbox.columns.keys()
+    assert "version" not in build_tables(schema=None).outbox.columns
 
 
 def test_payload_renders_as_jsonb_on_postgresql() -> None:
