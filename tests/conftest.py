@@ -51,3 +51,12 @@ class FakeClock:
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock()
+
+
+@pytest_asyncio.fixture
+async def storage(sqlite_engine, settings, clock):
+    from cap_event_handler.storage.sql import SqlStorage
+
+    store = SqlStorage(sqlite_engine, settings, clock=clock)
+    await store.create_tables()
+    return store

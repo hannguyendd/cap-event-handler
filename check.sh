@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# The verification gate. Exits non-zero on the first failure, so it cannot be
-# silently passed by a pipeline whose last command is `tail`.
-set -euo pipefail
-uv run ruff format .
-uv run ruff check .
-uv run mypy src
-uv run pytest -q
+# The verification gate. Prints a final PASS/FAIL line so that piping its
+# output to `tail` cannot hide a failure.
+set -uo pipefail
+fail=0
+run() { echo "--- $* ---"; "$@" || fail=1; }
+run uv run ruff format .
+run uv run ruff check .
+run uv run mypy src
+run uv run pytest -q
+if [ "$fail" -eq 0 ]; then echo "GATE: PASS"; else echo "GATE: FAIL"; fi
+exit "$fail"
