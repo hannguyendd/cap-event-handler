@@ -6,10 +6,10 @@
 PostgreSQL (SQLAlchemy 2.x async + asyncpg) and Amazon SNS/SQS. Distribution name
 `cap-event-handler`, import name `cap_event_handler`.
 
-**Status: design approved, implementation not started.** The authoritative design is
-`docs/superpowers/specs/2026-09-17-cap-event-handler-design.md`. Read it before writing code —
-it settles the schema, the two pipelines, the failure dispositions and what is deliberately
-deferred (§11). Do not re-litigate decisions recorded there; raise a concern and follow the spec.
+The authoritative design is `docs/superpowers/specs/2026-09-17-cap-event-handler-design.md`, and
+the plan it was built from is `docs/superpowers/plans/2026-09-17-cap-event-handler.md` (which
+records three deliberate deviations from the spec). Read the spec before changing behaviour; do not
+re-litigate decisions recorded there — raise a concern and follow it.
 
 ## Project management
 
@@ -19,23 +19,43 @@ deferred (§11). Do not re-litigate decisions recorded there; raise a concern an
 uv sync                         # install (dev group included by default)
 uv add <pkg>                    # runtime dependency
 uv add --dev <pkg>              # dev dependency
-uv run pytest                   # unit + pipeline tests; no Docker needed
+./check.sh                      # THE GATE: format, lint --fix, mypy --strict, tests
 uv run pytest -m integration    # needs Docker: PostgreSQL + LocalStack
-uv run ruff check . && uv run ruff format . && uv run mypy src
 ```
 
-`pytest` is configured with `addopts = "-m 'not integration'"`, so the default run skips anything
-requiring Docker. mypy runs in strict mode; new code is expected to pass it.
+**Always verify with `./check.sh` and read its final `GATE: PASS` / `GATE: FAIL` line.** Piping any
+individual tool to `tail` or `head` masks its exit code, which has already let a lint failure
+through once.
+
+`pytest` is configured with `addopts = "-m 'not integration'"`, so the default run never needs
+Docker. mypy runs strict; new code is expected to pass it. Markdown is excluded from ruff because
+ruff formats fenced Python blocks and mangles the hand-aligned snippets in the spec and plan.
+
+## Architecture in one paragraph
+
+`CapApp` (`app.py`) wires a `SqlStorage` (`storage/sql.py`), a `Transport`
+(`transport/snssqs.py`, or `transport/memory.py` in tests), a `Publisher` and a `Consumer`, and
+runs them plus two processors (`processors.py`). **Publish:** `publish()` inserts an outbox row on
+the *caller's* session and stages the id in `session.info`; a process-wide `after_commit` listener
+on SQLAlchemy's `Session` class hands it to the sender, and `OutboxSweeper` recovers anything the
+sender missed. **Consume:** one transaction per message holds an `ON CONFLICT DO NOTHING` dedup
+insert *and* the handler's writes, and SQS is acked only after it commits — so redelivery, backoff
+and quarantine come from the queue's visibility timeout and redrive policy, and there is no
+consume-side retry table.
 
 ## Conventions
 
-- Module layout is fixed by spec §8. `storage/` and `transport/` each define a `typing.Protocol`
-  in `base.py` with one production implementation and one in-memory fake. The fakes are what let
-  the pipeline tests run with no infrastructure — keep them in step with the real ones.
 - Message header names are constants in `envelope.py` (`cap-msg-id`, `cap-msg-name`, …). Never
-  hard-code the string form elsewhere.
-- Tests are written first (see `superpowers:test-driven-development`). The crash-window cases in
-  spec §10 assert the guarantees in §1.2, not implementation details.
+  hard-code the string form elsewhere; a test enforces this.
+- `SqlStorage` and `CapApp` take an injectable `clock`, which is how retention and lookback windows
+  are tested deterministically. Production leaves it at the wall clock.
+- Unit tests run against in-memory SQLite (real transactions, real `ON CONFLICT`) plus a broker
+  simulator. There is no storage fake — the guarantees under test are transactional, so a fake
+  would only test itself. Anything needing real `FOR UPDATE SKIP LOCKED` or real SNS goes in
+  `tests/integration/`.
+- `tests/test_guarantees.py` asserts the guarantee table, not implementation details. A refactor
+  that keeps it green is safe; one that breaks it broke a promise.
+- Tests are written first.
 
 ## Reference material, not our code
 
