@@ -163,9 +163,7 @@ async def test_redelivery_after_a_successful_commit_does_not_rerun_the_handler(
     messages = await transport.receive(queue_id, max_messages=1, wait_seconds=0)
     handler_entry = registry.get("order.paid")
     assert handler_entry is not None
-    await consumer._run_in_transaction(
-        env, Payload(value="v"), handler_entry, messages[0]
-    )
+    await consumer._run_in_transaction(env, Payload(value="v"), handler_entry, messages[0])
     assert calls == [1]
 
     # the broker redelivers when the lease expires

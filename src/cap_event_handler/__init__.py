@@ -10,6 +10,7 @@ from cap_event_handler.errors import (
     PayloadValidationError,
     UnroutableMessageError,
 )
+from cap_event_handler.transport.snssqs import SnsSqs
 
 __version__ = "0.1.0"
 
@@ -21,6 +22,7 @@ __all__ = [
     "HandlerTransactionError",
     "PayloadValidationError",
     "Settings",
+    "SnsSqs",
     "SnsSqsConfig",
     "UnroutableMessageError",
     "__version__",
