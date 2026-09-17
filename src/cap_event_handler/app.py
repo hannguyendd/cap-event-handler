@@ -23,6 +23,7 @@ from cap_event_handler.validation import validate_runtime, validate_settings
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
+    from datetime import datetime
     from uuid import UUID
 
     from pydantic import BaseModel
@@ -44,12 +45,15 @@ class CapApp:
         transport: Transport,
         group: str,
         settings: Settings | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.settings = settings or Settings()
         validate_settings(self.settings)
         self.group = group
         self.transport = transport
-        self.storage = SqlStorage(engine, self.settings)
+        # `clock` exists so retention and lookback windows can be driven
+        # deterministically; production leaves it at the wall clock.
+        self.storage = SqlStorage(engine, self.settings, clock=clock)
         self.registry = HandlerRegistry()
         install_after_commit_listener()
         self.publisher = Publisher(self.storage, transport, self.settings)
