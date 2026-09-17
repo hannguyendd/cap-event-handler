@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "pydantic>=2.0",
     "aiobotocore>=2.13",
@@ -30,6 +30,7 @@ dev = [
     "ruff>=0.7",
     "mypy>=1.13",
     "types-aiobotocore[sns,sqs]>=2.13",
+    "aiosqlite>=0.22.1",
 ]
 
 [tool.pytest.ini_options]
