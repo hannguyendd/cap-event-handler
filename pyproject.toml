@@ -43,6 +43,9 @@ addopts = "-m 'not integration'"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Markdown is documentation, not source: ruff reformats fenced Python blocks
+# inside it, which mangles hand-aligned snippets in the spec and plan.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "ASYNC"]
