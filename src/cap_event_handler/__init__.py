@@ -1,7 +1,7 @@
 """Transactional outbox/inbox messaging for PostgreSQL and Amazon SNS/SQS."""
 
 from cap_event_handler.app import CapApp
-from cap_event_handler.config import Settings, SnsSqsConfig
+from cap_event_handler.config import NatsConfig, Settings, SnsSqsConfig
 from cap_event_handler.context import Context
 from cap_event_handler.errors import (
     CapError,
@@ -20,6 +20,7 @@ __all__ = [
     "ConfigurationError",
     "Context",
     "HandlerTransactionError",
+    "NatsConfig",
     "PayloadValidationError",
     "Settings",
     "SnsSqs",

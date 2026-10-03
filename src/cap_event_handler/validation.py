@@ -45,22 +45,24 @@ async def validate_runtime(
     inbox_seconds = settings.inbox_retention.total_seconds()
     if inbox_seconds <= attrs.message_retention:
         warnings.append(
-            f"inbox_retention ({inbox_seconds:.0f}s) does not exceed the queue's "
-            f"MessageRetentionPeriod ({attrs.message_retention}s): a message redelivered "
-            "after its deduplication marker expires will be handled twice"
+            f"inbox_retention ({inbox_seconds:.0f}s) does not exceed the queue's message "
+            f"retention ({attrs.message_retention}s; SQS MessageRetentionPeriod, NATS stream "
+            "max_age): a message redelivered after its deduplication marker expires will be "
+            "handled twice"
         )
 
     if attrs.visibility_timeout < settings.expected_max_handler_seconds:
         warnings.append(
-            f"queue VisibilityTimeout ({attrs.visibility_timeout}s) is below "
+            f"queue VisibilityTimeout ({attrs.visibility_timeout}s; ack_wait on NATS) is below "
             f"expected_max_handler_seconds ({settings.expected_max_handler_seconds}s): "
             "slow handlers will be redelivered while still running"
         )
 
     if not attrs.has_redrive:
         warnings.append(
-            "queue has no redrive policy: a message that always fails will be retried "
-            "forever instead of moving to a dead-letter queue"
+            "queue has no redrive policy (on NATS: no dead-letter stream, or a consumer "
+            "max_deliver below NatsConfig.max_deliver): a message that always fails will be "
+            "retried forever or dropped instead of being dead-lettered"
         )
 
     if not settings.provision:

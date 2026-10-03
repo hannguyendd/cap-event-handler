@@ -2,6 +2,7 @@ from datetime import timedelta
 
 import pytest
 
+from cap_event_handler import NatsConfig
 from cap_event_handler.config import Settings, SnsSqsConfig
 from cap_event_handler.errors import CapError, ConfigurationError
 
@@ -59,3 +60,40 @@ def test_sns_sqs_config_requires_region() -> None:
 
 def test_configuration_error_is_a_cap_error() -> None:
     assert issubclass(ConfigurationError, CapError)
+
+
+def test_nats_config_defaults_match_the_spec() -> None:
+    c = NatsConfig()
+    assert c.servers == "nats://127.0.0.1:4222"
+    assert (c.stream, c.subject_prefix) == ("CAP", "cap")
+    assert (c.dlq_stream, c.dlq_subject_prefix) == ("CAP_DLQ", "cap-dlq")
+    assert c.ack_wait == timedelta(seconds=60)
+    assert c.max_deliver == 5
+    assert c.max_age == timedelta(days=7)
+    assert c.duplicate_window == timedelta(minutes=5)
+    assert c.num_replicas == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"max_deliver": 1}, "max_deliver"),
+        ({"stream": "X", "dlq_stream": "X"}, "dlq_stream"),
+        ({"subject_prefix": "x", "dlq_subject_prefix": "x"}, "dlq_subject_prefix"),
+        ({"subject_prefix": "a.b"}, "subject_prefix"),
+        ({"stream": "has space"}, "stream"),
+        ({"ack_wait": timedelta(0)}, "ack_wait"),
+        ({"num_replicas": 0}, "num_replicas"),
+        (
+            {"max_age": timedelta(minutes=1), "duplicate_window": timedelta(minutes=5)},
+            "duplicate_window",
+        ),
+    ],
+)
+def test_nats_config_rejects_unusable_values(kwargs, match) -> None:
+    with pytest.raises(ConfigurationError, match=match):
+        NatsConfig(**kwargs)
+
+
+def test_nats_config_allows_unlimited_retention() -> None:
+    assert NatsConfig(max_age=timedelta(0)).max_age == timedelta(0)
