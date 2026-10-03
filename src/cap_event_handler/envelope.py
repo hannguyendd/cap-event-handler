@@ -27,6 +27,11 @@ HEADER_MSG_TYPE = "cap-msg-type"
 HEADER_SENT_TIME = "cap-sent-time"
 HEADER_CORR_ID = "cap-corr-id"
 
+# Set on dead-lettered messages by transports that dead-letter in the library.
+HEADER_DLQ_REASON = "cap-dlq-reason"
+HEADER_DLQ_GROUP = "cap-dlq-group"
+HEADER_DLQ_DELIVERIES = "cap-dlq-deliveries"
+
 _SNS_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 
 

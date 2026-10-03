@@ -5,7 +5,7 @@ filter on all of its subjects; a JetStream consumer cannot span streams.
 JetStream has no redrive policy, so `reject` supplies one (spec §5). See
 docs/superpowers/specs/2026-10-03-nats-jetstream-transport-design.md.
 
-Requires the `nats` extra: `pip install cap-event-handler[nats]`.
+Requires the `nats` extra: `uv add "cap-event-handler[nats]"`.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import TYPE_CHECKING
 
 import nats
@@ -20,7 +21,13 @@ from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
-from cap_event_handler.envelope import HEADER_MSG_ID
+from cap_event_handler.envelope import (
+    HEADER_DLQ_DELIVERIES,
+    HEADER_DLQ_GROUP,
+    HEADER_DLQ_REASON,
+    HEADER_MSG_ID,
+    HEADER_MSG_NAME,
+)
 from cap_event_handler.errors import ConfigurationError
 from cap_event_handler.transport.base import QueueAttributes, ReceivedMessage
 
@@ -53,6 +60,14 @@ def nak_payload(delay_seconds: int) -> bytes:
 def strip_nats_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     """The message's own headers, without the `Nats-*` ones JetStream adds."""
     return {k: v for k, v in (headers or {}).items() if not k.startswith("Nats-")}
+
+
+_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
+
+
+def header_safe(value: str) -> str:
+    """A header value cannot span lines; validation errors and tracebacks do."""
+    return _LINE_BREAK_RE.sub(" ", value)
 
 
 class NatsJetStreamTransport:
@@ -240,7 +255,52 @@ class NatsJetStreamTransport:
         visibility_seconds: int,
         reason: str,
     ) -> None:
-        await self._reply(message.receipt, nak_payload(visibility_seconds), "nak")
+        """Nak, or on the last allowed delivery dead-letter and ack (spec §5.2)."""
+        nak = nak_payload(visibility_seconds)
+        if message.receive_count < self.config.max_deliver:
+            await self._reply(message.receipt, nak, "nak")
+            return
+        msg_id = message.headers.get(HEADER_MSG_ID, "<no id>")
+        name = message.headers.get(HEADER_MSG_NAME, "<no name>")
+        try:
+            await self._dead_letter(queue_id, message, reason)
+        except Exception:
+            logger.exception(
+                "dead-letter publish failed for message %s (%s) in group %r after %d "
+                "deliveries; JetStream will drop it at max_deliver: %s",
+                msg_id,
+                name,
+                queue_id,
+                message.receive_count,
+                reason,
+            )
+            await self._reply(message.receipt, nak, "nak")
+            return
+        await self._reply(message.receipt, _ACK, "ack")
+        logger.error(
+            "dead-lettered message %s (%s) in group %r after %d deliveries: %s",
+            msg_id,
+            name,
+            queue_id,
+            message.receive_count,
+            reason,
+        )
+
+    async def _dead_letter(self, queue_id: str, message: ReceivedMessage, reason: str) -> None:
+        _, js = await self._client()
+        headers = dict(message.headers)
+        headers[HEADER_DLQ_REASON] = header_safe(reason)
+        headers[HEADER_DLQ_GROUP] = queue_id
+        headers[HEADER_DLQ_DELIVERIES] = str(message.receive_count)
+        if HEADER_MSG_ID in message.headers:
+            # Idempotent if the final delivery is somehow handled twice.
+            headers[NATS_MSG_ID] = f"{message.headers[HEADER_MSG_ID]}:{queue_id}"
+        await js.publish(
+            f"{self.config.dlq_subject_prefix}.{queue_id}",
+            message.body.encode(),
+            headers=headers,
+            stream=self.config.dlq_stream,
+        )
 
     # -------------------------------------------------------------- validation
 

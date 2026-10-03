@@ -16,13 +16,20 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, StorageType, S
 from nats.js.errors import NotFoundError
 
 from cap_event_handler.config import NatsConfig
-from cap_event_handler.envelope import HEADER_MSG_ID
+from cap_event_handler.envelope import (
+    HEADER_DLQ_DELIVERIES,
+    HEADER_DLQ_GROUP,
+    HEADER_DLQ_REASON,
+    HEADER_MSG_ID,
+    HEADER_MSG_NAME,
+)
 from cap_event_handler.errors import ConfigurationError
 from cap_event_handler.transport.base import ReceivedMessage
 from cap_event_handler.transport.nats import (
     NATS_MSG_ID,
     UNLIMITED_RETENTION,
     NatsJetStreamTransport,
+    header_safe,
     nak_payload,
     strip_nats_headers,
 )
@@ -341,3 +348,66 @@ async def test_close_closes_the_connection(client) -> None:
     await transport.ensure_queue("g")
     await transport.close()
     assert client.closed is True
+
+
+# ------------------------------------------------------------ dead-lettering
+
+
+async def test_final_delivery_is_dead_lettered_then_acked(client, caplog) -> None:
+    msg = received(headers={HEADER_MSG_ID: "m1", HEADER_MSG_NAME: "order.paid"}, delivered=5)
+    await make(client).reject("g", msg, visibility_seconds=5, reason="handler failed: E: boom")
+
+    [(subject, payload, headers, stream)] = client.js.published
+    assert (subject, payload, stream) == ("cap-dlq.g", b"{}", "CAP_DLQ")
+    assert headers == {
+        HEADER_MSG_ID: "m1",
+        HEADER_MSG_NAME: "order.paid",
+        HEADER_DLQ_REASON: "handler failed: E: boom",
+        HEADER_DLQ_GROUP: "g",
+        HEADER_DLQ_DELIVERIES: "5",
+        NATS_MSG_ID: "m1:g",
+    }
+    assert client.replies == [(msg.receipt, b"+ACK")]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "dead-lettered" in errors[0].message
+    assert "m1" in errors[0].message
+    assert "order.paid" in errors[0].message
+
+
+async def test_a_failed_dead_letter_publish_naks_and_logs(client, caplog) -> None:
+    client.js.fail_publish = RuntimeError("dlq down")
+    msg = received(delivered=5)
+    await make(client).reject("g", msg, visibility_seconds=5, reason="r")
+    assert client.replies == [(msg.receipt, b'-NAK {"delay": 5000000000}')]
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "will drop it" in errors[0].message
+
+
+async def test_a_message_without_an_id_is_dead_lettered_without_a_dedup_id(client) -> None:
+    await make(client).reject(
+        "g", received(headers={}, delivered=5), visibility_seconds=0, reason="undecodable: x"
+    )
+    [(_, _, headers, _)] = client.js.published
+    assert NATS_MSG_ID not in headers
+    assert headers[HEADER_DLQ_REASON] == "undecodable: x"
+
+
+async def test_a_multi_line_reason_becomes_one_header_line(client) -> None:
+    reason = "invalid payload: 1 validation error for P\nvalue\r\n  Field required"
+    await make(client).reject("g", received(delivered=5), visibility_seconds=0, reason=reason)
+    [(_, _, headers, _)] = client.js.published
+    assert headers[HEADER_DLQ_REASON] == (
+        "invalid payload: 1 validation error for P value   Field required"
+    )
+    assert client.replies[-1][1] == b"+ACK"
+
+
+def test_header_safe_replaces_line_breaks() -> None:
+    assert header_safe("a\r\nb\nc\rd") == "a b c d"
+
+
+async def test_a_later_delivery_than_the_limit_is_still_dead_lettered(client) -> None:
+    await make(client).reject("g", received(delivered=7), visibility_seconds=0, reason="r")
+    assert len(client.js.published) == 1
