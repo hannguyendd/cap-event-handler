@@ -16,6 +16,11 @@ dependencies = [
 [project.scripts]
 cap-event-handler = "cap_event_handler.cli:main"
 
+[project.optional-dependencies]
+nats = [
+    "nats-py>=2.16",
+]
+
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
@@ -31,6 +36,7 @@ dev = [
     "mypy>=1.13",
     "types-aiobotocore[sns,sqs]>=2.13",
     "aiosqlite>=0.22.1",
+    "nats-py>=2.16",
 ]
 
 [tool.pytest.ini_options]
