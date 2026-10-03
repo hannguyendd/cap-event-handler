@@ -22,7 +22,8 @@ uv sync                         # install (dev group included by default)
 uv add <pkg>                    # runtime dependency
 uv add --dev <pkg>              # dev dependency
 ./check.sh                      # THE GATE: format, lint --fix, mypy --strict, tests
-uv run pytest -m integration    # needs Docker: PostgreSQL + LocalStack
+uv run pytest -m integration    # needs Docker: PostgreSQL + LocalStack + nats-server
+uv run pytest -m integration tests/integration/test_nats.py   # needs Docker: nats-server
 uv run pytest tests/test_consumer.py::test_name   # one test
 uv run pytest -k dedup          # by keyword
 uv run cap-event-handler worker module:attr       # run a CapApp as its own process (cli.py)
@@ -40,8 +41,9 @@ ruff formats fenced Python blocks and mangles the hand-aligned snippets in the s
 ## Architecture in one paragraph
 
 `CapApp` (`app.py`) wires a `SqlStorage` (`storage/sql.py`), a `Transport`
-(`transport/snssqs.py`, or `transport/memory.py` in tests), a `Publisher` and a `Consumer`, and
-runs them plus two processors (`processors.py`). **Publish:** `publish()` inserts an outbox row on
+(`transport/snssqs.py` or `transport/nats.py` — JetStream, optional extra `nats`, which
+dead-letters in the library because JetStream has no redrive — or `transport/memory.py` in
+tests), a `Publisher` and a `Consumer`, and runs them plus two processors (`processors.py`). **Publish:** `publish()` inserts an outbox row on
 the *caller's* session and stages the id in `session.info`; a process-wide `after_commit` listener
 on SQLAlchemy's `Session` class hands it to the sender, and `OutboxSweeper` recovers anything the
 sender missed. **Consume:** one transaction per message holds an `ON CONFLICT DO NOTHING` dedup

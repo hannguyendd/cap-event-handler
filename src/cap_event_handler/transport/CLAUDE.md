@@ -6,14 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `base.Transport` is a `Protocol` and describes everything the library asks of a broker. Topic and
 queue ids are opaque strings: ARNs and queue URLs on AWS, plain names in `MemoryTransport`.
-There are two implementations, and **both must change together**. A new method or a change of
-semantics goes into `base.py`, `memory.py` and `snssqs.py` in the same change.
+There are three implementations, and **all must change together**. A new method or a change of
+semantics goes into `base.py`, `memory.py`, `snssqs.py` and `nats.py` in the same change.
 
 Contract points the rest of the library relies on:
 
 - `ack` is called only after the handler's transaction commits. `reject` releases the lease
   (sets visibility) instead of deleting the message. Redelivery, backoff and dead-lettering come
-  from the broker, not from the library.
+  from the broker, not from the library — except on JetStream, which has no redrive policy:
+  `nats.py`'s `reject` dead-letters on the last allowed delivery, using the `reason` it is passed.
 - `ReceivedMessage.receive_count` counts this delivery too (SQS `ApproximateReceiveCount`).
 - `queue_attributes()` feeds startup validation (`validation.py`): visibility timeout,
   retention, whether a redrive policy exists, and which topics are subscribed.

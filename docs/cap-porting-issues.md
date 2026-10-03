@@ -45,12 +45,12 @@ From spec §11.
   it exists, the visibility timeout must exceed the slowest handler.
 - **FIFO queues.** CAP cannot use them either; ordering guarantees need design work.
 
-## NATS JetStream transport (in design)
+## NATS JetStream transport
 
-CAP ships a NATS transport (`src/DotNetCore.CAP.NATS` in the CAP checkout). This library is
-adding a JetStream `Transport` as an alternative production transport to SNS/SQS: each `CapApp`
-uses one or the other. Decisions are recorded here as the design settles, and the spec will
-be the authoritative record.
+CAP ships a NATS transport (`src/DotNetCore.CAP.NATS` in the CAP checkout). This library
+ships a JetStream `Transport` as an alternative production transport to SNS/SQS: each `CapApp`
+uses one or the other. The authoritative design is
+`docs/superpowers/specs/2026-10-03-nats-jetstream-transport-design.md`.
 
 | # | Concern | CAP | Here |
 |---|---|---|---|
