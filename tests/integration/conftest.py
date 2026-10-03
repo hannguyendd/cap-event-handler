@@ -35,3 +35,19 @@ def localstack_endpoint() -> Iterator[str]:
 
     with LocalStackContainer("localstack/localstack:3").with_services("sns", "sqs") as ls:
         yield ls.get_url()
+
+
+@pytest.fixture(scope="session")
+def nats_url() -> Iterator[str]:
+    from testcontainers.core.container import DockerContainer
+    from testcontainers.core.wait_strategies import LogMessageWaitStrategy
+
+    container = (
+        DockerContainer("nats:2.10")
+        .with_command("-js")
+        .with_exposed_ports(4222)
+        .waiting_for(LogMessageWaitStrategy("Server is ready"))
+    )
+    with container:
+        host = container.get_container_host_ip()
+        yield f"nats://{host}:{container.get_exposed_port(4222)}"

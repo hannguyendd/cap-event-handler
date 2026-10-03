@@ -14,6 +14,9 @@ will run in the default suite and fail without Docker.
   collector batches.
 - `test_localstack.py`: real SNS→SQS delivery, the notification unwrap, readable queue
   attributes, `provision=False` failures.
+- `test_nats.py`: real JetStream stream and consumer provisioning (idempotent, and
+  `provision=False` failures), the publish→handler round trip, nak redelivery with rollback,
+  dead-lettering after `max_deliver`, and `Nats-Msg-Id` duplicate dropping.
 
 Everything else belongs in the SQLite + `MemoryTransport` unit suite. Keep this suite small.
 
@@ -23,6 +26,9 @@ Everything else belongs in the SQLite + `MemoryTransport` unit suite. Keep this 
   URL to `postgresql+asyncpg://`. `pg_engine` is a fresh engine for each test.
 - `localstack_endpoint` (session scope) starts `localstack/localstack:3` with only SNS and SQS.
   `test_localstack.py` sets dummy AWS credentials and `us-east-1` through an autouse fixture.
+- `nats_url` (session scope) starts `nats:2.10` with `-js` through a generic
+  `DockerContainer`. NATS tests isolate with `isolated_config()`: a random stream name, DLQ
+  stream name and subject prefixes per test.
 - The containers are shared across the session, so **each test isolates itself with random
   names**: a fresh `schema_name` (`cap_<hex>`) per test, a random consumer `group`, and random
   topic and queue names. Follow this pattern; never reuse a fixed schema or queue name.
