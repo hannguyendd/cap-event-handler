@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Enforces docs/commit-convention.md. The allowed types and scopes are read from
+# that document's tables, so adding a scope there is all it takes to allow it.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -uo pipefail
+
+msg_file="$1"
+doc="$(cd "$(dirname "$0")/.." && pwd)/docs/commit-convention.md"
+max=72
+
+# First-column backticked names from the table under the heading matching $1.
+table_names() {
+    awk -v heading="$1" '
+        /^## / { in_section = ($0 ~ heading) }
+        in_section && /^\| `[a-z-]+`/ { split($0, cell, "`"); print cell[2] }
+    ' "$doc"
+}
+types="$(table_names '^## [0-9]+\. Types')"
+scopes="$(table_names '^## [0-9]+\. Scope')"
+if [ -z "$types" ] || [ -z "$scopes" ]; then
+    echo "commit-msg: could not read the type and scope tables from $doc" >&2
+    exit 1
+fi
+
+# The message as git will store it: stop at the verbose-mode scissors line,
+# drop comment lines, drop trailing blank lines.
+lines=()
+while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^#\ -+\ \>8\ -+$ ]] && break
+    [[ "$line" == \#* ]] && continue
+    lines+=("$line")
+done <"$msg_file"
+while [ "${#lines[@]}" -gt 0 ] && [[ -z "${lines[${#lines[@]}-1]// /}" ]]; do
+    unset 'lines[${#lines[@]}-1]'
+done
+while [ "${#lines[@]}" -gt 0 ] && [[ -z "${lines[0]// /}" ]]; do
+    lines=("${lines[@]:1}")
+done
+
+errors=()
+err() { errors+=("$1"); }
+
+if [ "${#lines[@]}" -eq 0 ]; then
+    err "the message is empty"
+else
+    header="${lines[0]}"
+
+    # git's own merge and revert messages, and autosquash markers, pass as-is.
+    if [[ "$header" =~ ^(Merge\ |Revert\ \"|fixup!\ |squash!\ |amend!\ ) ]]; then
+        exit 0
+    fi
+
+    type_alt="$(echo "$types" | paste -sd '|' -)"
+    pattern="^(${type_alt})(\(([^()]*)\))?(!)?: (.+)$"
+    if [[ "$header" =~ $pattern ]]; then
+        has_scope="${BASH_REMATCH[2]}"
+        scope="${BASH_REMATCH[3]}"
+        bang="${BASH_REMATCH[4]}"
+        description="${BASH_REMATCH[5]}"
+
+        if [ -n "$has_scope" ] && [ -z "$scope" ]; then
+            err "header: the scope is empty; drop the parentheses or name a scope"
+        elif [ -n "$scope" ] && ! echo "$scopes" | grep -qx -- "$scope"; then
+            err "scope '$scope' is not one of: $(echo "$scopes" | paste -sd ' ' -)"
+        fi
+        if [[ "$description" =~ ^[A-Z] ]]; then
+            err "the description must start with a lower-case letter"
+        fi
+        if [[ "$description" == *. ]]; then
+            err "the description must not end with a full stop"
+        fi
+    else
+        bang=""
+        err "header must be '<type>(<scope>)!: <description>' with type one of: $(echo "$types" | paste -sd ' ' -)"
+    fi
+
+    if [ "${#header}" -gt "$max" ]; then
+        err "the header is ${#header} characters; the limit is $max"
+    fi
+    if [ "${#lines[@]}" -gt 1 ] && [ -n "${lines[1]}" ]; then
+        err "the second line must be blank, separating the header from the body"
+    fi
+
+    breaking_footer=""
+    for ((i = 2; i < ${#lines[@]}; i++)); do
+        line="${lines[$i]}"
+        [[ "$line" =~ ^BREAKING[\ -]CHANGE:\  ]] && breaking_footer=1
+        # Long URLs and trailers (Key: value) cannot always be wrapped.
+        if [ "${#line}" -gt "$max" ] && [[ "$line" != *://* ]] &&
+            ! [[ "$line" =~ ^[A-Za-z-]+(\ CHANGE)?:\  ]]; then
+            err "body line $((i + 1)) is ${#line} characters; wrap at $max"
+        fi
+    done
+    if [ -n "$bang" ] && [ -z "$breaking_footer" ]; then
+        err "a '!' header needs a 'BREAKING CHANGE: <what breaks>' footer"
+    fi
+    if [ -z "$bang" ] && [ -n "$breaking_footer" ]; then
+        err "a BREAKING CHANGE footer needs '!' before the colon in the header"
+    fi
+fi
+
+if [ "${#errors[@]}" -gt 0 ]; then
+    echo "commit-msg: the commit message does not follow the convention:" >&2
+    for e in "${errors[@]}"; do echo "  - $e" >&2; done
+    echo "See docs/commit-convention.md. Your message is saved in $msg_file." >&2
+    exit 1
+fi
