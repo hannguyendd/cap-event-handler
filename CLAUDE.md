@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## What this is
 
 `cap-event-handler` — a Python library implementing the transactional outbox/inbox pattern over
@@ -21,6 +23,9 @@ uv add <pkg>                    # runtime dependency
 uv add --dev <pkg>              # dev dependency
 ./check.sh                      # THE GATE: format, lint --fix, mypy --strict, tests
 uv run pytest -m integration    # needs Docker: PostgreSQL + LocalStack
+uv run pytest tests/test_consumer.py::test_name   # one test
+uv run pytest -k dedup          # by keyword
+uv run cap-event-handler worker module:attr       # run a CapApp as its own process (cli.py)
 ```
 
 **Always verify with `./check.sh` and read its final `GATE: PASS` / `GATE: FAIL` line.** Piping any
@@ -28,7 +33,8 @@ individual tool to `tail` or `head` masks its exit code, which has already let a
 through once.
 
 `pytest` is configured with `addopts = "-m 'not integration'"`, so the default run never needs
-Docker. mypy runs strict; new code is expected to pass it. Markdown is excluded from ruff because
+Docker. mypy runs strict but only over `src/` (tests are not type-checked); new library code is
+expected to pass it. Markdown is excluded from ruff because
 ruff formats fenced Python blocks and mangles the hand-aligned snippets in the spec and plan.
 
 ## Architecture in one paragraph
@@ -46,16 +52,26 @@ consume-side retry table.
 ## Conventions
 
 - Message header names are constants in `envelope.py` (`cap-msg-id`, `cap-msg-name`, …). Never
-  hard-code the string form elsewhere; a test enforces this.
+  hard-code the string form elsewhere in `src/`. `tests/test_envelope.py` pins the values, but
+  nothing scans for hard-coded copies, so this is on you.
 - `SqlStorage` and `CapApp` take an injectable `clock`, which is how retention and lookback windows
   are tested deterministically. Production leaves it at the wall clock.
 - Unit tests run against in-memory SQLite (real transactions, real `ON CONFLICT`) plus a broker
   simulator. There is no storage fake — the guarantees under test are transactional, so a fake
-  would only test itself. Anything needing real `FOR UPDATE SKIP LOCKED` or real SNS goes in
+  would only test itself. `tests/conftest.py` provides the shared fixtures (`sqlite_engine`,
+  `settings` with `schema_name=None` because SQLite has no schemas, `clock` as a hand-advanced
+  `FakeClock`, `storage`, `transport`, `publisher`). Anything needing real `FOR UPDATE SKIP LOCKED` or real SNS goes in
   `tests/integration/`.
 - `tests/test_guarantees.py` asserts the guarantee table, not implementation details. A refactor
   that keeps it green is safe; one that breaks it broke a promise.
 - Tests are written first.
+- Commit messages follow `docs/commit-convention.md` (Conventional Commits with this repo's
+  scopes): `<type>(<scope>)!: <imperative, lower-case description>`. Read it before committing.
+  `.githooks/commit-msg` enforces it once enabled with `git config core.hooksPath .githooks`;
+  don't bypass it with `--no-verify`.
+
+User-facing behaviour (setup, migrations, operational settings, what is *not* guaranteed) is
+documented in `docs/usage.md`; keep it in step with behaviour changes.
 
 ## Reference material, not our code
 
