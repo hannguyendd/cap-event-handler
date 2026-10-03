@@ -173,3 +173,31 @@ async def test_provision_false_fails_loudly_on_a_missing_stream(nats_url) -> Non
             await transport.ensure_queue("g")
     finally:
         await transport.close()
+
+
+async def test_a_message_never_acknowledged_is_dead_lettered_not_dropped(nats_url) -> None:
+    """A final delivery that crashes or times out never calls reject; it must not be lost."""
+    config = isolated_config(nats_url, max_deliver=2, ack_wait=timedelta(seconds=1))
+    transport = NatsJetStreamTransport(config)
+    try:
+        subject = await transport.ensure_topic("order-paid")
+        queue_id = await transport.ensure_queue(f"g{uuid.uuid4().hex[:8]}")
+        await transport.subscribe(queue_id, [subject])
+        msg_id = str(uuid.uuid4())
+        await transport.publish(subject, "{}", {HEADER_MSG_ID: msg_id})
+        for delivery in (1, 2):  # handed over, then "crash": neither ack nor reject
+            [msg] = await transport.receive(queue_id, max_messages=10, wait_seconds=3)
+            assert msg.receive_count == delivery
+        assert await transport.receive(queue_id, max_messages=10, wait_seconds=3) == []
+    finally:
+        await transport.close()
+
+    nc = await nats.connect(nats_url)
+    try:
+        js = nc.jetstream()
+        dead = await js.get_last_msg(config.dlq_stream, f"{config.dlq_subject_prefix}.{queue_id}")
+        assert dead.headers[HEADER_MSG_ID] == msg_id
+        assert dead.headers[HEADER_DLQ_DELIVERIES] == "3"
+        assert "not acknowledged" in dead.headers[HEADER_DLQ_REASON]
+    finally:
+        await nc.close()

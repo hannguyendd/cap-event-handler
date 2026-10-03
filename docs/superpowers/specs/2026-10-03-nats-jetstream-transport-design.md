@@ -79,7 +79,9 @@ and they are valid for a JetStream fetch too.
 
 `NatsJetStreamTransport(config: NatsConfig, *, provision: bool = True)` implements the
 `Transport` Protocol. It owns one `nats.aio.client.Client`, connected lazily on first use and
-closed by `close()`. `nats-py`'s automatic reconnect stays **on**. CAP turns it off.
+closed by `close()`. `nats-py`'s automatic reconnect stays **on**, with no attempt limit
+(`max_reconnect_attempts=-1`); a client that is closed anyway is replaced on the next call. CAP
+turns reconnect off.
 
 Names reach the transport already normalised by `normalize_topic` to `[A-Za-z0-9_-]`. These are
 valid NATS subject tokens and consumer names, so `app.py` and `publisher.py` do not change.
@@ -88,12 +90,12 @@ valid NATS subject tokens and consumer names, so `app.py` and `publisher.py` do 
 |---|---|
 | `ensure_topic(name)` | Returns `f"{subject_prefix}.{name}"`. On first call, ensures the streams (below). |
 | `ensure_queue(group)` | Ensures the streams and returns `group` as the durable consumer name. It creates no consumer, because one with no filter would receive every subject in the stream. `subscribe` creates it. |
-| `subscribe(queue_id, subjects)` | `add_consumer` on `stream` with `durable_name=queue_id`, `filter_subjects=sorted(subjects)`, `ack_policy=explicit`, `ack_wait`, `max_deliver`, `deliver_policy=new`. On 2.10+ this creates or updates. `deliver_policy=new` matches a freshly created SQS queue: messages published before the group existed are not delivered. |
+| `subscribe(queue_id, subjects)` | `add_consumer` on `stream` with `durable_name=queue_id`, `filter_subjects=sorted(subjects)`, `ack_policy=explicit`, `ack_wait`, `max_deliver=-1` (unlimited; see §5.4), `deliver_policy=new`. Does nothing when `provision` is off. On 2.10+ this creates or updates. `deliver_policy=new` matches a freshly created SQS queue: messages published before the group existed are not delivered. |
 | `publish(subject, body, headers)` | `js.publish(subject, body, headers=headers + {"Nats-Msg-Id": headers[MSG_ID]}, stream=stream)`. Raises if the publish is not acked, so the publisher treats it as a failed send. |
 | `receive(queue_id, max_messages, wait_seconds)` | Pull fetch on a bound pull subscription (`pull_subscribe_bind`, cached per `queue_id`), `batch=max_messages`, `timeout=max(wait_seconds, 1)`. A fetch timeout returns `[]`. Each message becomes a `ReceivedMessage` with `headers` (minus `Nats-*` headers), `body` (UTF-8), `receipt=msg.reply` and `receive_count=msg.metadata.num_delivered`. |
 | `ack(queue_id, receipt)` | Publishes `+ACK` to the receipt subject. |
 | `reject(queue_id, message, *, visibility_seconds, reason)` | §5. |
-| `queue_attributes(queue_id)` | From `consumer_info` and `stream_info`: `visibility_timeout = ack_wait`, `message_retention = stream max_age` (seconds; unlimited reports as a very large value), `has_redrive = max_deliver > 0 and the DLQ stream exists`, `subscribed_topics = filter_subjects`. |
+| `queue_attributes(queue_id)` | From `consumer_info` and `stream_info`: `visibility_timeout = ack_wait`, `message_retention = stream max_age` (seconds; unlimited reports as a very large value), `has_redrive` = the DLQ stream exists and the consumer's `max_deliver` is unlimited or above `NatsConfig.max_deliver` (§5.4), `subscribed_topics = filter_subjects`. |
 
 **Ensuring streams.** When `provision` is set: if `stream` is missing, create it with subjects
 `[f"{subject_prefix}.>"]`, file storage, `max_age`, `duplicate_window` and `num_replicas`. If
@@ -166,7 +168,7 @@ try:
                stream = dlq_stream)
 except Exception:
     log ERROR "dead-letter publish failed for <id> (<name>) in <group> after <n> deliveries;
-               JetStream will drop it at max_deliver: <reason>"
+               it will be retried on its next delivery: <reason>"
     publish -NAK (as above)
     return
 ack(message.receipt)
@@ -178,12 +180,11 @@ log ERROR "dead-lettered <id> (<name>) in <group> after <n> deliveries: <reason>
   `tests/test_envelope.py` and never hard-coded elsewhere.
 - The `Nats-Msg-Id` on the dead-letter publish makes it idempotent if the final delivery is
   somehow handled twice.
-- After the dead-letter publish fails and the message is nak'd, JetStream does not redeliver it,
-  because `max_deliver` is reached. It emits a `MAX_DELIVERIES` advisory. That loss is why the
-  failure is logged at `ERROR` with the full context.
+- After the dead-letter publish fails and the message is nak'd, JetStream redelivers it, and
+  §5.4 retries dead-lettering on receipt without running the handler again.
 - If acking the original fails after a successful dead-letter publish, the failure is logged at
-  `WARNING`. Since this was the last allowed delivery, JetStream does not redeliver, so the
-  message is in the DLQ exactly once.
+  `WARNING`. The redelivery is dead-lettered again on receipt, and the `Nats-Msg-Id` makes the
+  dead-letter stream drop the duplicate within its duplicate window.
 
 ### 5.3 Other failures
 
@@ -194,6 +195,22 @@ log ERROR "dead-lettered <id> (<name>) in <group> after <n> deliveries: <reason>
 | Publish not acked or timed out | Raises; the publisher counts a failed send and the row stays for the sweeper. |
 | `ack` / `-NAK` publish fails | Logged at `WARNING`. JetStream redelivers after `ack_wait`, and the inbox absorbs the duplicate. |
 
+### 5.4 Deliveries that never reach `reject` (amended in final review)
+
+JetStream counts every delivery toward a consumer's `max_deliver`, including one whose
+`ack_wait` expired with no ack or nak. Examples: the process crashed or was killed mid-handler, or
+the handler outran `ack_wait`. Had the consumer used `max_deliver = NatsConfig.max_deliver`, such
+a final delivery would never reach `reject`, and JetStream would drop the message with only an
+advisory. That breaks "quarantined, not lost". So:
+
+- `subscribe` creates the consumer with `max_deliver=-1`.
+- `receive` dead-letters any message with `num_delivered > NatsConfig.max_deliver` before handing
+  it over, with reason `not acknowledged within ack_wait on delivery <n> (max_deliver <m>)`. It
+  goes through the same `reject` path, so a failed dead-letter publish naks with an `ack_wait`
+  delay and is retried on the next delivery.
+- Nothing is ever dropped by JetStream. A dead-letter stream that stays unavailable means the
+  message waits, not that it is lost.
+
 ## 6. Startup validation
 
 `validate_runtime` (base spec §9) needs no NATS-specific code. With the mapping in §4 it warns
@@ -201,7 +218,8 @@ when:
 
 - `ack_wait < expected_max_handler_seconds`;
 - `inbox_retention <= stream max_age`;
-- there is no dead-letter route (`max_deliver` unlimited or the DLQ stream missing).
+- there is no dead-letter route: the DLQ stream is missing, or an operator-made consumer's
+  `max_deliver` is at or below `NatsConfig.max_deliver` (§5.4).
 
 The existing warning text names SQS concepts (`VisibilityTimeout`, `MessageRetentionPeriod`,
 "redrive policy"). It is reworded to be transport-neutral. For example, "queue visibility

@@ -189,7 +189,7 @@ handles. Dead letters go to a second stream (`dlq_stream`, default `CAP_DLQ`) on
 | Setting | Default | Why it matters |
 |---|---|---|
 | `ack_wait` | 60s | Must exceed your slowest handler, like SQS `VisibilityTimeout`. Startup warns otherwise. |
-| `max_deliver` | 5 | On this delivery a still-failing message is dead-lettered. At least 2. |
+| `max_deliver` | 5 | On this delivery a still-failing message is dead-lettered. At least 2. The JetStream consumer itself is created with unlimited deliveries, so the library, not NATS, decides when to give up. |
 | `max_age` | 7 days | Stream retention. Keep it below `Settings.inbox_retention` (15 days); startup warns otherwise. Zero means unlimited. |
 | `duplicate_window` | 5 min | JetStream drops a re-sent message with the same id inside this window. That's an optimisation; the inbox catches the rest. |
 | `num_replicas` | 1 | Stream replicas on a clustered server. |
@@ -201,19 +201,24 @@ different retention, run them in separate apps with different `stream` names.
 storage, and each group's consumer is created or updated. **Existing streams are never
 modified.** If your stream does not capture `<subject_prefix>.>`, startup fails rather than
 publishing into the void. With `NatsJetStreamTransport(config, provision=False)` and
-`Settings(provision=False)`, nothing is created. A missing main stream fails startup; a missing
-dead-letter stream triggers a warning.
+`Settings(provision=False)`, nothing is created or updated, consumers included. A missing main
+stream fails startup; a missing dead-letter stream triggers a warning. If you create the consumer
+yourself, give it `max_deliver` of `-1` or above `NatsConfig.max_deliver`. A consumer that stops
+at or before it lets JetStream drop a message whose final delivery crashed, and startup warns.
 
 **Dead letters.** JetStream has no redrive policy, so the library supplies one. When a message
-fails on its `max_deliver`-th delivery, the library copies it to the dead-letter stream with
-these headers, then acks it:
+fails on its `max_deliver`-th delivery, the library copies it to the dead-letter stream, then acks
+it. The same happens without running the handler again when a later delivery arrives, which means
+the final delivery ended without an outcome: the process crashed or was killed, or the handler
+outran `ack_wait`. The copy carries these headers:
 
 - `cap-dlq-reason`: why it failed;
 - `cap-dlq-group`;
 - `cap-dlq-deliveries`.
 
-Both this and a failed dead-letter publish are logged at `ERROR`. A failed dead-letter publish
-means JetStream will drop the message. Inspect dead letters with the NATS CLI:
+Both this and a failed dead-letter publish are logged at `ERROR`. After a failed dead-letter
+publish the message is nak'd, and dead-lettering is retried on its next delivery. Inspect dead
+letters with the NATS CLI:
 
 ```bash
 nats stream view CAP_DLQ
@@ -221,7 +226,11 @@ nats stream get CAP_DLQ --last-for "cap-dlq.billing-service"
 ```
 
 To replay one, republish its body and headers to the original subject (`cap.<event>`) without the
-`cap-dlq-*` and `Nats-*` headers. The inbox treats it as new only if the original never committed,
-which is the case for every dead letter.
+`cap-dlq-*` and `Nats-*` headers. The subject fans out to **every** group subscribed to the event,
+not just the one that dead-lettered it. The failing group never committed, so its handler runs
+again. The other groups skip it as a duplicate only while their inbox markers last
+(`inbox_retention`, 15 days by default). Replay an older dead letter and their handlers run again
+too. A body that was not valid UTF-8 is stored with replacement characters, so its original bytes
+are lost.
 
 Why this differs from .NET CAP's NATS transport: `docs/cap-porting-issues.md`, rows N1–N6.

@@ -90,6 +90,7 @@ class FakeClient:
         self.replies: list[tuple[str, bytes]] = []
         self.fail_replies: Exception | None = None
         self.closed = False
+        self.is_closed = False
 
     def jetstream(self) -> FakeJS:
         return self.js
@@ -101,6 +102,7 @@ class FakeClient:
 
     async def close(self) -> None:
         self.closed = True
+        self.is_closed = True
 
 
 @pytest.fixture
@@ -212,7 +214,9 @@ async def test_subscribe_creates_one_filtered_durable_pull_consumer(client) -> N
     assert config.ack_policy == AckPolicy.EXPLICIT
     assert config.deliver_policy == DeliverPolicy.NEW
     assert config.ack_wait == 60.0
-    assert config.max_deliver == 5
+    # Unlimited: the library, not JetStream, decides when to give up (see
+    # test_a_delivery_past_the_limit_is_dead_lettered_without_handling).
+    assert config.max_deliver == -1
 
 
 # ------------------------------------------------------------------ publish
@@ -382,7 +386,7 @@ async def test_a_failed_dead_letter_publish_naks_and_logs(client, caplog) -> Non
     assert client.replies == [(msg.receipt, b'-NAK {"delay": 5000000000}')]
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
-    assert "will drop it" in errors[0].message
+    assert "retried on its next delivery" in errors[0].message
 
 
 async def test_a_message_without_an_id_is_dead_lettered_without_a_dedup_id(client) -> None:
@@ -411,3 +415,75 @@ def test_header_safe_replaces_line_breaks() -> None:
 async def test_a_later_delivery_than_the_limit_is_still_dead_lettered(client) -> None:
     await make(client).reject("g", received(delivered=7), visibility_seconds=0, reason="r")
     assert len(client.js.published) == 1
+
+
+# ------------------------------------------------- review fixes (final pass)
+
+
+async def test_a_delivery_past_the_limit_is_dead_lettered_without_handling(client, caplog) -> None:
+    """A final delivery that ended in a crash or an ack_wait expiry never reached reject."""
+    transport = await _subscribed(client)
+    msg = jetstream_msg(headers={HEADER_MSG_ID: "m1", HEADER_MSG_NAME: "order.paid"}, delivered=6)
+    client.js.fetch_result = [msg]
+    assert await transport.receive("g", max_messages=10, wait_seconds=0) == []
+    [(subject, _, headers, stream)] = client.js.published
+    assert (subject, stream) == ("cap-dlq.g", "CAP_DLQ")
+    assert headers[HEADER_DLQ_DELIVERIES] == "6"
+    assert "not acknowledged" in headers[HEADER_DLQ_REASON]
+    assert client.replies == [(msg.reply, b"+ACK")]
+    assert any(r.levelname == "ERROR" and "dead-lettered" in r.message for r in caplog.records)
+
+
+async def test_deliveries_within_the_limit_are_handed_over(client) -> None:
+    transport = await _subscribed(client)
+    client.js.fetch_result = [jetstream_msg(headers={HEADER_MSG_ID: "m1"}, delivered=5)]
+    assert len(await transport.receive("g", max_messages=10, wait_seconds=0)) == 1
+    assert client.js.published == []
+
+
+async def test_a_consumer_that_stops_at_our_limit_means_no_redrive(client) -> None:
+    """At exactly max_deliver, a crash on the final delivery would let JetStream drop it."""
+    transport = await _subscribed(client)
+    client.js.consumers[("CAP", "g")].config.max_deliver = 5
+    assert (await transport.queue_attributes("g")).has_redrive is False
+
+
+async def test_subscribe_does_nothing_without_provisioning(client) -> None:
+    client.js.streams["CAP"] = SimpleNamespace(config=StreamConfig(name="CAP", subjects=["cap.>"]))
+    transport = make(client, provision=False)
+    await transport.ensure_queue("g")
+    await transport.subscribe("g", ["cap.a"])
+    assert client.js.added_consumers == []
+
+
+async def test_a_connection_nats_gave_up_on_is_replaced() -> None:
+    clients = [FakeClient(), FakeClient()]
+    connects: list[FakeClient] = []
+
+    async def connect(**kwargs):
+        connects.append(clients[len(connects)])
+        return connects[-1]
+
+    transport = NatsJetStreamTransport(NatsConfig(), connect=connect)
+    await transport.ensure_queue("g")
+    clients[0].is_closed = True  # reconnect attempts exhausted
+    await transport.ensure_queue("g")
+    assert connects == clients
+    assert len(clients[1].js.added_streams) == 2  # streams re-checked on the new connection
+
+
+async def test_reconnect_is_never_abandoned() -> None:
+    seen: dict = {}
+
+    async def connect(**kwargs):
+        seen.update(kwargs)
+        return FakeClient()
+
+    await NatsJetStreamTransport(NatsConfig(), connect=connect).ensure_queue("g")
+    assert seen["max_reconnect_attempts"] == -1
+
+
+async def test_a_builtin_timeout_from_fetch_returns_nothing(client) -> None:
+    transport = await _subscribed(client)
+    client.js.fetch_result = TimeoutError()
+    assert await transport.receive("g", max_messages=10, wait_seconds=0) == []

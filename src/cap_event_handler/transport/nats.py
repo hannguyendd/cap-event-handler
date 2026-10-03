@@ -17,7 +17,6 @@ import re
 from typing import TYPE_CHECKING
 
 import nats
-from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, StorageType, StreamConfig
 from nats.js.errors import NotFoundError
 
@@ -89,29 +88,37 @@ class NatsJetStreamTransport:
         self._subs: dict[str, JetStreamContext.PullSubscription] = {}
 
     async def _client(self) -> tuple[Client, JetStreamContext]:
+        if self._nc is not None and self._nc.is_closed:
+            # nats-py closes the client for good once it stops reconnecting; start over
+            # rather than handing every caller a dead connection.
+            self._forget_connection()
         if self._nc is None or self._js is None:
             servers = self.config.servers
             self._nc = await self._connect(
-                servers=servers if isinstance(servers, str) else list(servers)
+                servers=servers if isinstance(servers, str) else list(servers),
+                max_reconnect_attempts=-1,
             )
             self._js = self._nc.jetstream()
         return self._nc, self._js
 
-    async def close(self) -> None:
-        if self._nc is not None:
-            await self._nc.close()
+    def _forget_connection(self) -> None:
         self._nc = None
         self._js = None
         self._subs.clear()
         self._streams_ready = False
 
+    async def close(self) -> None:
+        if self._nc is not None:
+            await self._nc.close()
+        self._forget_connection()
+
     # ------------------------------------------------------------ provisioning
 
     async def _ensure_streams(self) -> None:
         """Create missing streams when provisioning; never modify existing ones."""
+        _, js = await self._client()  # first: a replaced connection resets _streams_ready
         if self._streams_ready:
             return
-        _, js = await self._client()
         cfg = self.config
         wanted = f"{cfg.subject_prefix}.>"
         try:
@@ -164,6 +171,8 @@ class NatsJetStreamTransport:
         return name
 
     async def subscribe(self, queue_id: str, topic_ids: Sequence[str]) -> None:
+        if not self.provision:
+            return  # the operator owns the consumer, as Terraform owns SQS wiring
         _, js = await self._client()
         cfg = self.config
         await js.add_consumer(
@@ -173,7 +182,10 @@ class NatsJetStreamTransport:
                 filter_subjects=sorted(topic_ids),
                 ack_policy=AckPolicy.EXPLICIT,
                 ack_wait=cfg.ack_wait.total_seconds(),
-                max_deliver=cfg.max_deliver,
+                # Unlimited on purpose: JetStream counts deliveries that end in a crash or
+                # an ack_wait expiry and would drop the message silently. `receive`
+                # dead-letters anything past cfg.max_deliver instead.
+                max_deliver=-1,
                 deliver_policy=DeliverPolicy.NEW,
             ),
         )
@@ -213,10 +225,11 @@ class NatsJetStreamTransport:
             return []
         try:
             msgs = await sub.fetch(batch=max_messages, timeout=max(wait_seconds, 1))
-        except NatsTimeoutError:
+        except TimeoutError:  # nats-py raises its own subclass and, rarely, the builtin
             return []
-        return [
-            ReceivedMessage(
+        out: list[ReceivedMessage] = []
+        for msg in msgs:
+            received = ReceivedMessage(
                 headers=strip_nats_headers(msg.headers),
                 # Replacement, not an exception: an undecodable body must reach the
                 # consumer, fail envelope decoding and be rejected like any other.
@@ -224,8 +237,22 @@ class NatsJetStreamTransport:
                 receipt=msg.reply,
                 receive_count=msg.metadata.num_delivered,
             )
-            for msg in msgs
-        ]
+            if received.receive_count > self.config.max_deliver:
+                # Its last allowed delivery ended without an ack or a reject: the
+                # handler crashed, hung past ack_wait or was killed. Quarantine it
+                # rather than run it again.
+                await self.reject(
+                    queue_id,
+                    received,
+                    visibility_seconds=int(self.config.ack_wait.total_seconds()),
+                    reason=(
+                        f"not acknowledged within ack_wait on delivery "
+                        f"{received.receive_count - 1} (max_deliver {self.config.max_deliver})"
+                    ),
+                )
+                continue
+            out.append(received)
+        return out
 
     async def _reply(self, receipt: str, payload: bytes, what: str) -> None:
         """Ack or nak by publishing to the message's reply subject.
@@ -267,7 +294,7 @@ class NatsJetStreamTransport:
         except Exception:
             logger.exception(
                 "dead-letter publish failed for message %s (%s) in group %r after %d "
-                "deliveries; JetStream will drop it at max_deliver: %s",
+                "deliveries; it will be retried on its next delivery: %s",
                 msg_id,
                 name,
                 queue_id,
@@ -319,16 +346,17 @@ class NatsJetStreamTransport:
             info = await js.consumer_info(cfg.stream, queue_id)
         except NotFoundError:
             ack_wait = cfg.ack_wait.total_seconds()
-            consumer_max_deliver = cfg.max_deliver
+            consumer_max_deliver = -1  # what subscribe creates
             subjects: list[str] = []
         else:
             c = info.config
             ack_wait = c.ack_wait or 30.0
             consumer_max_deliver = c.max_deliver if c.max_deliver is not None else -1
             subjects = list(c.filter_subjects or ([c.filter_subject] if c.filter_subject else []))
-        # The library dead-letters on delivery `cfg.max_deliver`; a consumer that
-        # gives up earlier lets JetStream drop the message first.
-        reaches_our_limit = consumer_max_deliver <= 0 or consumer_max_deliver >= cfg.max_deliver
+        # The library dead-letters on delivery cfg.max_deliver, or on the next one if
+        # that delivery ended in a crash or timeout. A consumer that stops at or
+        # before cfg.max_deliver lets JetStream drop the message first.
+        reaches_our_limit = consumer_max_deliver <= 0 or consumer_max_deliver > cfg.max_deliver
         return QueueAttributes(
             visibility_timeout=int(ack_wait),
             message_retention=retention,
