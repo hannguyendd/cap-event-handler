@@ -27,6 +27,7 @@ than sleeping: `receive()` ignores `wait_seconds`. Test hooks:
 - `sent`: every publish.
 - `fail_publish`: set an exception to make `publish` raise.
 - `dead_letter`: messages that hit the redrive limit.
+- `rejected`: every `(message, reason)` passed to `reject`.
 
 When the real SQS behaviour you depend on isn't modelled here yet, extend the simulator to match
 SQS. Don't special-case the code under test.

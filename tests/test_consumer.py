@@ -126,6 +126,7 @@ async def test_a_raising_handler_rolls_back_and_rejects(
     registry.register("order.paid", Payload, handler)
     env = await deliver(transport)
     await make_consumer(storage, transport, registry, settings).drain_once()
+    assert transport.rejected[-1][1] == "handler failed: RuntimeError: handler exploded"
 
     async with storage.sessionmaker() as s:
         rows = (await s.execute(sa.select(effects_table.c.value))).scalars().all()
@@ -172,6 +173,7 @@ async def test_unroutable_message_is_rejected_by_default(
 ) -> None:
     await deliver(transport, name="nobody.listens")
     await make_consumer(storage, transport, HandlerRegistry(), settings).drain_once()
+    assert transport.rejected[-1][1] == ("unroutable: no handler for 'nobody.listens' in group 'g'")
     clock.advance(timedelta(seconds=settings.reject_backoff_seconds + 1))
     assert len(await transport.receive("g", max_messages=10, wait_seconds=0)) == 1
 
@@ -203,6 +205,7 @@ async def test_invalid_payload_is_rejected_and_the_handler_never_runs(
     await transport.publish(topic_id, '{"wrong_field": 1}', env.headers)
 
     await make_consumer(storage, transport, registry, settings).drain_once()
+    assert transport.rejected[-1][1].startswith("invalid payload: ")
     assert called == []
     clock.advance(timedelta(seconds=settings.reject_backoff_seconds + 1))
     assert len(await transport.receive("g", max_messages=10, wait_seconds=0)) == 1
@@ -363,6 +366,23 @@ async def test_undecodable_message_is_rejected(
 
     consumer = make_consumer(storage, transport, registry, settings)
     await consumer.drain_once()
+    assert transport.rejected[-1][1].startswith("undecodable: ")
     assert consumer.last_error is not None
     clock.advance(timedelta(seconds=settings.reject_backoff_seconds + 1))
     assert len(await transport.receive("g", max_messages=10, wait_seconds=0)) == 1
+
+
+async def test_a_long_failure_reason_is_truncated(storage, transport, settings) -> None:
+    from cap_event_handler.consumer import MAX_REASON_LENGTH
+
+    registry = HandlerRegistry()
+
+    async def handler(ctx: Context[Payload]) -> None:
+        raise RuntimeError("x" * 5000)
+
+    registry.register("order.paid", Payload, handler)
+    await deliver(transport)
+    await make_consumer(storage, transport, registry, settings).drain_once()
+    reason = transport.rejected[-1][1]
+    assert len(reason) == MAX_REASON_LENGTH
+    assert reason.startswith("handler failed: RuntimeError: xxx")

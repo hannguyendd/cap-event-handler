@@ -57,6 +57,7 @@ class MemoryTransport:
         self._queues: dict[str, _Queue] = {}
         self._receipts = count()
         self.dead_letter: list[ReceivedMessage] = []
+        self.rejected: list[tuple[ReceivedMessage, str]] = []
         self.sent: list[tuple[str, str, dict[str, str]]] = []
         self.fail_publish: Exception | None = None
 
@@ -123,11 +124,19 @@ class MemoryTransport:
         queue = self._queues[queue_id]
         queue.messages = [m for m in queue.messages if m.receipt != receipt]
 
-    async def reject(self, queue_id: str, receipt: str, *, visibility_seconds: int) -> None:
+    async def reject(
+        self,
+        queue_id: str,
+        message: ReceivedMessage,
+        *,
+        visibility_seconds: int,
+        reason: str,
+    ) -> None:
+        self.rejected.append((message, reason))
         now = self._clock()
         queue = self._queues[queue_id]
         for msg in queue.messages:
-            if msg.receipt != receipt:
+            if msg.receipt != message.receipt:
                 continue
             msg.visible_at = now + timedelta(seconds=visibility_seconds)
             if self.max_receive_count is not None and msg.receive_count >= self.max_receive_count:

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MAX_REASON_LENGTH = 1000
+"""Failure reasons are cut to this length before they reach the transport."""
+
 
 class Consumer:
     """Polls one queue on behalf of one consumer group."""
@@ -85,7 +88,7 @@ class Consumer:
         except CapError as exc:
             self.last_error = exc
             logger.error("undecodable message on %s: %r", self._queue_id, exc)
-            await self._reject(message)
+            await self._reject(message, f"undecodable: {exc}")
             return
 
         handler = self._registry.get(envelope.name)
@@ -99,7 +102,10 @@ class Consumer:
             if self._settings.on_unroutable == "ack":
                 await self._transport.ack(self._queue_id, message.receipt)
             else:
-                await self._reject(message)
+                await self._reject(
+                    message,
+                    f"unroutable: no handler for {envelope.name!r} in group {self._group!r}",
+                )
             return
 
         try:
@@ -114,7 +120,7 @@ class Consumer:
                 exc,
                 message.body,
             )
-            await self._reject(message)
+            await self._reject(message, f"invalid payload: {exc}")
             return
 
         try:
@@ -122,7 +128,7 @@ class Consumer:
         except Exception as exc:
             self.last_error = exc
             logger.exception("handler for %s (%s) failed", envelope.id, envelope.name)
-            await self._reject(message)
+            await self._reject(message, f"handler failed: {type(exc).__name__}: {exc}")
             return
 
         await self._transport.ack(self._queue_id, message.receipt)
@@ -166,9 +172,10 @@ class Consumer:
                     "the library owns that transaction and commits it for you"
                 )
 
-    async def _reject(self, message: ReceivedMessage) -> None:
+    async def _reject(self, message: ReceivedMessage, reason: str) -> None:
         await self._transport.reject(
             self._queue_id,
-            message.receipt,
+            message,
             visibility_seconds=self._settings.reject_backoff_seconds,
+            reason=reason[:MAX_REASON_LENGTH],
         )
