@@ -148,3 +148,23 @@ async def test_provisioned_run_does_not_check_subscriptions(clock) -> None:
         topic_ids=dict(topic_ids) | {"order.shipped": orphan},
     )
     assert all("order.shipped" not in w for w in warnings)
+
+
+async def test_warnings_name_the_nats_equivalents(clock) -> None:
+    transport = MemoryTransport(
+        clock=clock, visibility_timeout=10, message_retention=1_209_600, max_receive_count=None
+    )
+    queue_id, topic_ids = await _wire(transport)
+    warnings = await validate_runtime(
+        settings=Settings(
+            schema_name=None, inbox_retention=timedelta(days=1), expected_max_handler_seconds=60
+        ),
+        transport=transport,
+        queue_id=queue_id,
+        registry=_registry(),
+        topic_ids=topic_ids,
+    )
+    text = " ".join(warnings)
+    assert "ack_wait" in text
+    assert "max_age" in text
+    assert "dead-letter stream" in text

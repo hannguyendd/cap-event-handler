@@ -1,6 +1,7 @@
 # cap-event-handler
 
-Transactional outbox/inbox messaging for Python services on PostgreSQL and Amazon SNS/SQS.
+Transactional outbox/inbox messaging for Python services on PostgreSQL and Amazon SNS/SQS, or
+NATS JetStream (optional `nats` extra).
 
 A domain state change and its outgoing event commit atomically in one PostgreSQL transaction.
 An incoming event's effect commits atomically with the record that it was handled, so handlers

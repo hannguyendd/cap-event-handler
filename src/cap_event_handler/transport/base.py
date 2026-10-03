@@ -61,8 +61,20 @@ class Transport(Protocol):
         """Delete the message. Called only after the handler's transaction commits."""
         ...
 
-    async def reject(self, queue_id: str, receipt: str, *, visibility_seconds: int) -> None:
-        """Release the lease so the broker redelivers after `visibility_seconds`."""
+    async def reject(
+        self,
+        queue_id: str,
+        message: ReceivedMessage,
+        *,
+        visibility_seconds: int,
+        reason: str,
+    ) -> None:
+        """Release the lease so the broker redelivers after `visibility_seconds`.
+
+        `reason` says why the message failed. A transport whose broker has no
+        redrive policy uses it to dead-letter the message on its last delivery;
+        the others ignore it.
+        """
         ...
 
     async def queue_attributes(self, queue_id: str) -> QueueAttributes: ...

@@ -9,6 +9,9 @@ from pydantic import BaseModel
 
 from cap_event_handler.envelope import (
     HEADER_CORR_ID,
+    HEADER_DLQ_DELIVERIES,
+    HEADER_DLQ_GROUP,
+    HEADER_DLQ_REASON,
     HEADER_MSG_ID,
     HEADER_MSG_NAME,
     HEADER_MSG_TYPE,
@@ -126,3 +129,9 @@ def test_sent_time_is_utc_and_round_trips_exactly() -> None:
     env = build_envelope("order.paid", OrderPaid(order_id=uuid7(), amount="1"))
     assert env.sent_time.tzinfo == UTC or env.sent_time.utcoffset() == datetime.now(UTC).utcoffset()
     assert Envelope.from_transport(env.headers, env.body()).sent_time == env.sent_time
+
+
+def test_dead_letter_header_names_are_pinned() -> None:
+    assert HEADER_DLQ_REASON == "cap-dlq-reason"
+    assert HEADER_DLQ_GROUP == "cap-dlq-group"
+    assert HEADER_DLQ_DELIVERIES == "cap-dlq-deliveries"

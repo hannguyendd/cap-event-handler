@@ -155,3 +155,82 @@ use a conditional update that is safe in any order.
 
 **The outbox is a retry journal, not an audit log.** Succeeded rows are deleted after
 `outbox_retention` (1 day by default).
+
+## 9. NATS JetStream instead of SNS/SQS
+
+Each app uses one transport. To use JetStream, install the extra and pass a
+`NatsJetStreamTransport`:
+
+```bash
+uv add "cap-event-handler[nats]"
+```
+
+```python
+from cap_event_handler import CapApp, NatsConfig
+from cap_event_handler.transport.nats import NatsJetStreamTransport
+
+app = CapApp(
+    engine=engine,
+    transport=NatsJetStreamTransport(NatsConfig(servers="nats://nats:4222")),
+    group="billing-service",
+)
+```
+
+Requires **NATS server 2.10 or later**, which supports consumers that filter on several subjects.
+
+**Layout.** One stream (`stream`, default `CAP`) captures every event under
+`<subject_prefix>.>` (default `cap.>`). Event `order.paid` is published on `cap.order-paid`.
+Each group gets one durable pull consumer, named after the group, filtered to the events it
+handles. Dead letters go to a second stream (`dlq_stream`, default `CAP_DLQ`) on
+`<dlq_subject_prefix>.<group>` (default `cap-dlq.<group>`).
+
+**Settings that matter** (`NatsConfig`):
+
+| Setting | Default | Why it matters |
+|---|---|---|
+| `ack_wait` | 60s | Must exceed your slowest handler, like SQS `VisibilityTimeout`. Startup warns otherwise. |
+| `max_deliver` | 5 | On this delivery a still-failing message is dead-lettered. At least 2. The JetStream consumer itself is created with unlimited deliveries, so the library, not NATS, decides when to give up. |
+| `max_age` | 7 days | Stream retention. Keep it below `Settings.inbox_retention` (15 days); startup warns otherwise. Zero means unlimited. |
+| `duplicate_window` | 5 min | JetStream drops a re-sent message with the same id inside this window. That's an optimisation; the inbox catches the rest. |
+| `num_replicas` | 1 | Stream replicas on a clustered server. |
+
+These limits apply to **every** event, because there is one stream. If two kinds of event need
+different retention, run them in separate apps with different `stream` names.
+
+**Provisioning.** With `provision=True` (the default), missing streams are created with file
+storage, and each group's consumer is created or updated. **Existing streams are never
+modified.** If your stream does not capture `<subject_prefix>.>`, startup fails rather than
+publishing into the void. With `NatsJetStreamTransport(config, provision=False)` and
+`Settings(provision=False)`, nothing is created or updated, consumers included. A missing main
+stream fails startup; a missing dead-letter stream triggers a warning. If you create the consumer
+yourself, give it `max_deliver` of `-1` or above `NatsConfig.max_deliver`. A consumer that stops
+at or before it lets JetStream drop a message whose final delivery crashed, and startup warns.
+
+**Dead letters.** JetStream has no redrive policy, so the library supplies one. When a message
+fails on its `max_deliver`-th delivery, the library copies it to the dead-letter stream, then acks
+it. The same happens without running the handler again when a later delivery arrives, which means
+the final delivery ended without an outcome: the process crashed or was killed, or the handler
+outran `ack_wait`. The copy carries these headers:
+
+- `cap-dlq-reason`: why it failed;
+- `cap-dlq-group`;
+- `cap-dlq-deliveries`.
+
+Both this and a failed dead-letter publish are logged at `ERROR`. After a failed dead-letter
+publish the message is nak'd, and dead-lettering is retried on its next delivery. Inspect dead
+letters with the NATS CLI:
+
+```bash
+nats stream view CAP_DLQ
+nats stream get CAP_DLQ --last-for "cap-dlq.billing-service"
+```
+
+To replay one, republish its body and headers to the original subject (`cap.<event>`) without the
+`cap-dlq-*` and `Nats-*` headers. The subject fans out to **every** group subscribed to the event,
+not just the one that dead-lettered it. The failing group never committed, so its handler runs
+again. The other groups skip it as a duplicate only while their inbox markers last
+(`inbox_retention`, 15 days by default). Replay an older dead letter and their handlers run again
+too. A body that was not valid UTF-8 is stored with replacement characters, so its original bytes
+are lost.
+
+Why this differs from .NET CAP's NATS transport: `docs/cap-porting-issues.md`, rows N1–N6.

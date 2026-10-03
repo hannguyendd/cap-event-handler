@@ -29,6 +29,9 @@ In scope for v1: the publish pipeline (outbox), the consume pipeline (inbox), th
 processors that make the publish side durable, PostgreSQL storage via SQLAlchemy 2.x async +
 asyncpg, and SNS fan-out → SQS-per-consumer-group transport.
 
+Added after v1: NATS JetStream as an alternative transport, specified in
+`2026-10-03-nats-jetstream-transport-design.md`.
+
 Out of scope for v1: everything in §11.
 
 ### 1.2 Guarantees
@@ -501,7 +504,8 @@ Recorded for later consideration; explicitly not in v1.
 - **Batch publish** — `sns.publish_batch` for the sweeper's 200-row pages.
 - **FIFO queues** — CAP cannot use them at all; ordering guarantees would need design work.
 - **Additional storages** (psycopg3, Django ORM) **and transports** (RabbitMQ, Kafka) behind the
-  existing Protocols.
+  existing Protocols. (NATS JetStream has since been added; see
+  `2026-10-03-nats-jetstream-transport-design.md`.)
 - **CloudEvents envelope** as an alternative wire format.
 - **Outbox partitioning** by `created_at` for very high-volume deployments.
 

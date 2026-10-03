@@ -73,7 +73,7 @@ async def test_reject_makes_the_message_visible_after_the_backoff(transport, clo
     topic_id, queue_id = await _wire(transport)
     await transport.publish(topic_id, "{}", {})
     msg = (await transport.receive(queue_id, max_messages=10, wait_seconds=0))[0]
-    await transport.reject(queue_id, msg.receipt, visibility_seconds=5)
+    await transport.reject(queue_id, msg, visibility_seconds=5, reason="boom")
     assert await transport.receive(queue_id, max_messages=10, wait_seconds=0) == []
     clock.advance(timedelta(seconds=6))
     assert len(await transport.receive(queue_id, max_messages=10, wait_seconds=0)) == 1
@@ -93,7 +93,7 @@ async def test_redrive_moves_a_poison_message_to_the_dead_letter_list(clock) -> 
     for _ in range(3):
         msgs = await transport.receive(queue_id, max_messages=10, wait_seconds=0)
         assert len(msgs) == 1
-        await transport.reject(queue_id, msgs[0].receipt, visibility_seconds=0)
+        await transport.reject(queue_id, msgs[0], visibility_seconds=0, reason="boom")
     assert await transport.receive(queue_id, max_messages=10, wait_seconds=0) == []
     assert len(transport.dead_letter) == 1
 
@@ -132,3 +132,11 @@ def test_memory_transport_satisfies_the_protocol() -> None:
     from cap_event_handler.transport.base import Transport
 
     assert isinstance(MemoryTransport(), Transport)
+
+
+async def test_reject_records_the_reason(transport: MemoryTransport) -> None:
+    topic_id, queue_id = await _wire(transport)
+    await transport.publish(topic_id, "{}", {})
+    msg = (await transport.receive(queue_id, max_messages=10, wait_seconds=0))[0]
+    await transport.reject(queue_id, msg, visibility_seconds=0, reason="handler failed: X")
+    assert transport.rejected == [(msg, "handler failed: X")]

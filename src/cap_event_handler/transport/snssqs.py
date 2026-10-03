@@ -182,10 +182,20 @@ class SnsSqsTransport:
         _, sqs = await self._clients()
         await sqs.delete_message(QueueUrl=queue_id, ReceiptHandle=receipt)
 
-    async def reject(self, queue_id: str, receipt: str, *, visibility_seconds: int) -> None:
+    async def reject(
+        self,
+        queue_id: str,
+        message: ReceivedMessage,
+        *,
+        visibility_seconds: int,
+        reason: str,
+    ) -> None:
+        del reason  # SQS's redrive policy does the dead-lettering
         _, sqs = await self._clients()
         await sqs.change_message_visibility(
-            QueueUrl=queue_id, ReceiptHandle=receipt, VisibilityTimeout=visibility_seconds
+            QueueUrl=queue_id,
+            ReceiptHandle=message.receipt,
+            VisibilityTimeout=visibility_seconds,
         )
 
     async def queue_attributes(self, queue_id: str) -> QueueAttributes:
