@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,7 @@ from cap_event_handler.storage.sql import SqlStorage
 from cap_event_handler.validation import validate_runtime, validate_settings
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import Callable
     from datetime import datetime
     from uuid import UUID
 
@@ -161,7 +162,7 @@ class CapApp:
         self._started = False
 
     @asynccontextmanager
-    async def run(self) -> AsyncIterator[CapApp]:
+    async def run(self) -> AsyncGenerator[CapApp]:
         """Run the app for the duration of the block."""
         await self.start()
         try:
